@@ -9,6 +9,41 @@ from xml.dom.minidom import parseString
 import json
 import logging
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, UniqueConstraint, Index
+from sqlalchemy.dialects.mysql import TIMESTAMP
+
+Base = declarative_base()
+
+engine = create_engine("mysql+pymysql://root:admin@127.0.0.1:3306/paper_good?charset=utf8", max_overflow=0, pool_size=5)
+sessionFactory = sessionmaker(bind=engine)
+
+class Document(Base):
+    __tablename__ = 'document_t'
+    
+    id = Column(Integer, primary_key=True)
+    title = Column(String(255), index=True, nullable=False)
+    status = Column(Integer, nullable=False)
+    type = Column(Integer, nullable=False)
+    oss_name = Column(String(255))
+    intro = Column(String(4096))
+    authors = Column(String(512))
+    link = Column(String(512))
+    times_cited = Column(Integer)
+    publish_time = Column(TIMESTAMP)
+    tags = Column(String(1024))
+
+    created_at = Column(TIMESTAMP, nullable=False)
+    updated_at = Column(TIMESTAMP, nullable=False)
+
+class ChannelDoc(Base):
+    __tablename__ = 'channel_doc_t'
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), unique=True, nullable=False)
+    doc_ids = Column(Text)
 
 def parse_metadata(xml_metadata, output_file):
     xml_tree = parseString(xml_metadata)
@@ -61,32 +96,59 @@ def parse_metadata(xml_metadata, output_file):
          "journal-ref": journal_ref, "report-no": report_no, "categories": categories, "license": license,
          "abstract": abstract, "versions": versions, "update_date": update_date,
          "authors_parsed": authors_parsed})
-    with open(output_file, 'a+') as fout:
-        fout.write(jsond + '\n')
+    db_session = sessionFactory()
+    pdf_url = f'https://arxiv.org/pdf/{id}'
+    doc = Document(title=title, 
+                   type=1,
+                   status = 0,
+                   oss_name=pdf_url,
+                   intro=abstract, 
+                   authors=authors, 
+                   link=pdf_url,
+                   publish_time=update_date,
+                   tags=categories
+                   )
+    '''    
+    title = Column(String(255), index=True, nullable=False)
+    status = Column(Integer, nullable=False)
+    type = Column(Integer, nullable=False)
+    oss_name = Column(String(255), nullable=False)
+    intro = Column(String(4096))
+    authors = Column(String(512))
+    link = Column(String(512))
+    times_cited = Column(Integer)
+    publish_time = Column(TIMESTAMP)
+    tags = Column(String(1024))
+    '''
+    
+    db_session.add(doc)
+    db_session.commit()
+    # with open(output_file, 'a+') as fout:
+    #     fout.write(jsond + '\n')
 
 
 def download_metadata(arxiv_id, output_file):
     try:
         xml_metadata = requests.get(
             "http://export.arxiv.org/oai2?verb=GetRecord&identifier=oai:arXiv.org:{0}&metadataPrefix=arXivRaw".format(
-                arxiv_id),timeout=5).content.decode()
+                arxiv_id),timeout=10).content.decode()
         if "idDoesNotExist" in xml_metadata:
             return
         parse_metadata(xml_metadata, output_file)
         print("INFO:arxiv_id {0} finish".format(arxiv_id))
 
         return
-    except:
-        print("ERROR:error in downloading metadata of arxiv_id {0}".format(arxiv_id))
-        with open("arxiv_download_error.log", 'a+') as ferr:
-            ferr.write("{0}\n".format(arxiv_id))
+    except Exception as e:
+        print("ERROR:error in downloading metadata of arxiv_id {0}, {1}".format(arxiv_id, e))
+        # with open("arxiv_download_error.log", 'a+') as ferr:
+        #     ferr.write("{0}\n".format(arxiv_id))
 
 
 def parse_argument(args):
     parser = ArgumentParser()
-    parser.add_argument("-s", "--start-yymm", type=str, default="0704",
+    parser.add_argument("-s", "--start-yymm", type=str, default="2201",
                         help="The start (contain) year and month, in format yymm, like 1101 (rep Jan 2011)")
-    parser.add_argument("-e", "--end-yymm", type=str, default="2012",
+    parser.add_argument("-e", "--end-yymm", type=str, default="2307",
                         help="The end (contain) year and month, in format yymm, like 1101 (rep Jan 2011)")
     parser.add_argument("-m", "--maximum", type=int, default=1073741824,
                         help="Maximum metadata number. Specify this if you only want a small amount of metadata")
@@ -154,3 +216,24 @@ if __name__ == "__main__":
         time.sleep(3)
     pool.close()
     pool.join()
+
+    # insert channel
+    db_session = sessionFactory()
+    document_ids = db_session.query(Document.id).all()
+    ids = ""
+    for doc in document_ids:
+        if ids:
+            ids = f'{ids},{doc.id}'
+        else:
+            ids = doc.id
+    print(ids)
+    # channel latest
+    chl = "channel_latest"
+    channel = db_session.query(ChannelDoc).filter(ChannelDoc.name==chl).first()
+    if channel:
+        channel.doc_ids = ids
+        db_session.commit()
+    else:
+        channel = ChannelDoc(name=chl, doc_ids=ids)
+        db_session.add(channel)
+        db_session.commit()
